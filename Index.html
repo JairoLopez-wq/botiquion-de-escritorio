@@ -748,6 +748,8 @@ td.muted { color:var(--muted); font-size:11px; }
           <div class="vender-left">
             <div class="flex" style="gap:8px;margin-bottom:12px;flex-wrap:wrap">
               <div class="search-w"><span class="search-ic">🔍</span><input id="srch" placeholder="Buscar producto o promo..." oninput="renderGrid()" autocomplete="off"></div>
+              <button class="btn b-out" onclick="abrirVentaLibre()" title="Vender algo que no está en el catálogo">+ Venta libre</button>
+              <button class="btn b-out" onclick="abrirPrestamo()" title="Anotar dinero prestado a un cliente">+ Prestar</button>
             </div>
             <div class="prod-filters" id="catBar"></div>
             <div class="pgrid" id="pgrid"></div>
@@ -768,11 +770,9 @@ td.muted { color:var(--muted); font-size:11px; }
               <div class="tot-row"><span class="tot-lbl">Items</span><span class="tot-val" id="cItems">0</span></div>
               <div class="tot-big" id="totBig"><span>TOTAL</span><span class="amt" id="cTot">$0.00</span></div>
               <div class="cart-form">
-                <div class="g2">
-                  <div><label>Pago</label><select id="metodo"><option>Efectivo</option><option>Transferencia</option><option>CoDi/QR</option><option>Terminal</option></select></div>
-                  <div><label>Estado</label><select id="estado"><option>Pagado</option><option>Fiado</option><option>Al rato te pago</option></select></div>
-                </div>
-                <div><label>Cliente</label><input id="cliente" placeholder="Nombre (opcional)..." list="cliDL" autocomplete="off"><datalist id="cliDL"></datalist></div>
+                <div id="cFiadoNote" style="display:none;color:var(--amber);font-size:11px;margin-bottom:8px"></div>
+                <div><label>Cobro (toca el chip de cada artículo para dejarlo fiado)</label><div id="cartPagoSplit"></div></div>
+                <div><label>Cliente</label><input id="cliente" placeholder="Nombre (obligatorio si algo queda fiado)..." list="cliDL" autocomplete="off" oninput="actualizarBotonCobrar()"><datalist id="cliDL"></datalist></div>
                 <div><label>Notas</label><input id="notasV" placeholder="Notas opcionales..."></div>
                 <button class="btn b-g btn-full" id="btnReg" onclick="registrar()">Carrito vacío</button>
               </div>
@@ -812,7 +812,15 @@ td.muted { color:var(--muted); font-size:11px; }
             <button class="btn b-g" onclick="abrirRecibo('adeudo')">📄 Enviar recordatorio</button>
             <button class="btn b-out" onclick="copWA()">📱 Copiar texto</button>
           </div>
-          <div style="margin-top:10px"><button class="btn b-r btn-full" onclick="pgTodo()">✅ Marcar todo pagado</button></div>
+          <div class="card" style="margin-top:10px">
+            <div class="flex-sb" style="margin-bottom:6px">
+              <label style="margin:0">Monto a abonar</label>
+              <button class="b-ghost" style="font-size:11px" onclick="fPagarTodo()">Pagar todo</button>
+            </div>
+            <input type="number" id="fMonto" step="0.5" min="0" oninput="fMontoChange()">
+            <div id="fPagoSplit" class="mt"></div>
+            <button class="btn b-r btn-full mt" id="btnAbono" onclick="registrarAbonoUI()">Registrar abono</button>
+          </div>
           <div id="fMsg" class="msg"></div>
         </div>
       </div>
@@ -1439,6 +1447,38 @@ td.muted { color:var(--muted); font-size:11px; }
   </div>
 </div>
 
+<!-- v9 — VENTA LIBRE MODAL (fuera de catálogo, no toca inventario) -->
+<div class="modal-backdrop" id="ventaLibreModal">
+  <div class="modal" style="max-width:420px">
+    <div class="modal-hdr"><h3>🏷️ Venta libre</h3><button class="modal-close" onclick="cerrarVentaLibre()">×</button></div>
+    <div class="modal-body">
+      <p style="font-size:12px;color:var(--muted);margin-bottom:12px">Para vender algo que no está (o no está actualizado) en tu catálogo. Se agrega al carrito, no descuenta inventario y no cuenta en tus reportes de producto/margen.</p>
+      <label>Nombre</label><input id="vl_nombre" placeholder="ej. Paleta payaso">
+      <div class="g2 mt">
+        <div><label>Precio</label><input type="number" id="vl_precio" step="0.5" min="0" placeholder="0.00"></div>
+        <div><label>Cantidad</label><input type="number" id="vl_cantidad" value="1" min="1" step="1"></div>
+      </div>
+      <button class="btn b-g btn-full mt" onclick="agregarVentaLibre()">Agregar al carrito</button>
+      <div id="vlMsg" class="msg"></div>
+    </div>
+  </div>
+</div>
+
+<!-- v9 — PRÉSTAMO MODAL (dinero prestado a un cliente, queda como fiado) -->
+<div class="modal-backdrop" id="prestamoModal">
+  <div class="modal" style="max-width:420px">
+    <div class="modal-hdr"><h3>🤝 Prestar dinero</h3><button class="modal-close" onclick="cerrarPrestamo()">×</button></div>
+    <div class="modal-body">
+      <p style="font-size:12px;color:var(--muted);margin-bottom:12px">Anota un préstamo informal. Queda como adeudo del cliente (aparece en Fiados) y genera su propio recibo, pero no cuenta como venta en tus reportes.</p>
+      <label>Cliente</label><input id="pr_cliente" list="cliDL" autocomplete="off" placeholder="Nombre...">
+      <div class="mt"><label>Monto</label><input type="number" id="pr_monto" step="0.5" min="0" placeholder="0.00"></div>
+      <div class="mt"><label>Notas</label><input id="pr_notas" placeholder="Notas opcionales..."></div>
+      <button class="btn b-g btn-full mt" onclick="registrarPrestamo(this)">Registrar préstamo</button>
+      <div id="prMsg" class="msg"></div>
+    </div>
+  </div>
+</div>
+
 <!-- GRANEL CALC MODAL -->
 <div class="modal-backdrop" id="granelModal">
   <div class="modal" style="max-width:480px">
@@ -1543,6 +1583,85 @@ var RECIBO_ACTIVE_PROFILE = '';
 // Modo "ticket libre" (meme/test): si está activo, NO se persisten cambios de ningún
 // tipo, y el recibo no afecta a las ventas reales — sólo es vista preview.
 var TICKET_LIBRE = false;
+
+// ════════════════════════════════════════════════
+// v9 — PAGO SPLIT (componente reutilizable: checkout y abonos de fiado)
+// Reparte un monto esperado entre 1+ métodos de pago. Con 1 solo método (el
+// caso de siempre) el monto se sincroniza solo con lo esperado, sin fricción.
+// Con 2+, cada monto es editable y debe cuadrar exacto con lo esperado.
+// ════════════════════════════════════════════════
+var PAGO_METODOS = ['Efectivo', 'Transferencia', 'CoDi/QR', 'Terminal'];
+var PAGO_SPLITS = {}; // containerId -> { arr:[{metodo,monto}], esperado, onChange }
+
+function pagoSplitInit(containerId, esperado, onChange) {
+  PAGO_SPLITS[containerId] = {
+    arr: [{ metodo: PAGO_METODOS[0], monto: Math.round((Number(esperado) || 0) * 100) / 100 }],
+    esperado: Number(esperado) || 0,
+    onChange: onChange || null
+  };
+  pagoSplitRender(containerId);
+}
+function pagoSplitSetEsperado(containerId, esperado) {
+  var st = PAGO_SPLITS[containerId]; if (!st) return;
+  st.esperado = Math.round((Number(esperado) || 0) * 100) / 100;
+  if (st.arr.length === 1) st.arr[0].monto = st.esperado; // 1 método: siempre = esperado, sin fricción
+  pagoSplitRender(containerId);
+}
+function pagoSplitSuma(arr) { return Math.round(arr.reduce(function(s, p) { return s + (Number(p.monto) || 0); }, 0) * 100) / 100; }
+function pagoSplitOk(containerId) {
+  var st = PAGO_SPLITS[containerId]; if (!st) return false;
+  return Math.abs(Math.round((st.esperado - pagoSplitSuma(st.arr)) * 100) / 100) < 0.01;
+}
+function pagoSplitGet(containerId) {
+  var st = PAGO_SPLITS[containerId]; if (!st) return [];
+  return st.arr.filter(function(p) { return (Number(p.monto) || 0) > 0.0001; })
+    .map(function(p) { return { metodo: p.metodo, monto: Number(p.monto) || 0 }; });
+}
+function pagoSplitAdd(containerId) {
+  var st = PAGO_SPLITS[containerId]; if (!st) return;
+  var resto = Math.max(0, Math.round((st.esperado - pagoSplitSuma(st.arr)) * 100) / 100);
+  var usados = st.arr.map(function(p) { return p.metodo; });
+  var siguiente = PAGO_METODOS.find(function(m) { return usados.indexOf(m) < 0; }) || PAGO_METODOS[0];
+  st.arr.push({ metodo: siguiente, monto: resto });
+  pagoSplitRender(containerId);
+  if (st.onChange) st.onChange();
+}
+function pagoSplitRemove(containerId, i) {
+  var st = PAGO_SPLITS[containerId]; if (!st || st.arr.length <= 1) return;
+  st.arr.splice(i, 1);
+  pagoSplitRender(containerId);
+  if (st.onChange) st.onChange();
+}
+function pagoSplitEdit(containerId, i, key, val) {
+  var st = PAGO_SPLITS[containerId]; if (!st || !st.arr[i]) return;
+  if (key === 'metodo') st.arr[i].metodo = val;
+  else st.arr[i].monto = Math.round((parseFloat(val) || 0) * 100) / 100;
+  pagoSplitRender(containerId);
+  if (st.onChange) st.onChange();
+}
+function pagoSplitRender(containerId) {
+  var st = PAGO_SPLITS[containerId]; var el = $(containerId);
+  if (!st || !el) return;
+  var suma = pagoSplitSuma(st.arr);
+  var falta = Math.round((st.esperado - suma) * 100) / 100;
+  var multi = st.arr.length > 1;
+  var rows = st.arr.map(function(p, i) {
+    var sel = PAGO_METODOS.map(function(m) { return '<option' + (m === p.metodo ? ' selected' : '') + '>' + m + '</option>'; }).join('');
+    return '<div class="flex" style="gap:6px;margin-bottom:6px;align-items:center">'
+      + '<select style="flex:1" onchange="pagoSplitEdit(\'' + containerId + '\',' + i + ',\'metodo\',this.value)">' + sel + '</select>'
+      + (multi
+          ? '<input type="number" step="0.5" min="0" style="width:90px" value="' + p.monto.toFixed(2) + '" oninput="pagoSplitEdit(\'' + containerId + '\',' + i + ',\'monto\',this.value)">'
+          + '<button class="b-ghost" onclick="pagoSplitRemove(\'' + containerId + '\',' + i + ')" style="color:var(--red);padding:4px 8px">×</button>'
+          : '<span class="mono" style="width:90px;text-align:right;color:var(--muted)">' + fmtMoney(p.monto) + '</span>')
+      + '</div>';
+  }).join('');
+  var estadoTxt = st.esperado <= 0.001 ? ''
+    : (Math.abs(falta) < 0.01 ? '<span style="color:var(--green)">Cuadra ✓</span>'
+      : falta > 0 ? '<span style="color:var(--amber)">Falta ' + fmtMoney(falta) + '</span>'
+      : '<span style="color:var(--red)">Sobra ' + fmtMoney(-falta) + '</span>');
+  el.innerHTML = rows
+    + '<div class="flex-sb" style="font-size:11px"><button class="b-ghost" onclick="pagoSplitAdd(\'' + containerId + '\')">+ dividir en métodos</button><span class="mono">' + estadoTxt + '</span></div>';
+}
 
 // v8.1 — Marcas de agua predefinidas (SVG data URLs)
 // Cada SVG está diseñado en negro/oscuro para que el mix-blend-mode multiply lo tinte.
@@ -1672,6 +1791,7 @@ function iniciar() {
       renderGrid();
       renderProdList();
       cargarConfigEnUI();
+      pagoSplitInit('cartPagoSplit', 0, actualizarBotonCobrar);
       setupKeyboard();
       setupOffline();
       setTimeout(function() { $('srch').focus(); }, 100);
@@ -1907,7 +2027,7 @@ function renderGrid() {
 function addC(i) {
   var x = FL[i]; if (!x) return;
   var ex = CART.find(function(c) { return c.n === x.n; });
-  if (ex) ex.q++; else CART.push({ n:x.n, p:x.p, pe:x.p, co:x.co, t:x.t || 'Producto', q:1 });
+  if (ex) ex.q++; else CART.push({ n:x.n, p:x.p, pe:x.p, co:x.co, t:x.t || 'Producto', q:1, estado:'Pagado' });
   renderCart(); updPill(); renderGrid();
 }
 function addCQty(i) {
@@ -1916,8 +2036,16 @@ function addCQty(i) {
   if (n === null) return;
   var qty = parseInt(n) || 1;
   var ex = CART.find(function(c) { return c.n === x.n; });
-  if (ex) ex.q += qty; else CART.push({ n:x.n, p:x.p, pe:x.p, co:x.co, t:x.t || 'Producto', q:qty });
+  if (ex) ex.q += qty; else CART.push({ n:x.n, p:x.p, pe:x.p, co:x.co, t:x.t || 'Producto', q:qty, estado:'Pagado' });
   renderCart(); updPill(); renderGrid();
+}
+// v9 — cada línea del carrito cicla su propio estado: Pagado -> Fiado -> Al rato te pago.
+var CART_ESTADOS = ['Pagado', 'Fiado', 'Al rato te pago'];
+function chE(i) {
+  if (!CART[i]) return;
+  var idx = CART_ESTADOS.indexOf(CART[i].estado || 'Pagado');
+  CART[i].estado = CART_ESTADOS[(idx + 1) % CART_ESTADOS.length];
+  renderCart();
 }
 function renderCart() {
   var el = $('cartItems');
@@ -1925,15 +2053,21 @@ function renderCart() {
     el.innerHTML = '<div class="cart-empty"><div class="ic">⚡</div><p>Toca un producto<br>para agregarlo</p></div>';
     $('cTot').textContent = '$0.00'; $('cSub').textContent = '$0.00'; $('cItems').textContent = '0';
     $('totBig').classList.remove('has-amount');
+    if ($('cFiadoNote')) $('cFiadoNote').style.display = 'none';
+    pagoSplitSetEsperado('cartPagoSplit', 0);
     $('btnReg').disabled = true; $('btnReg').textContent = 'Carrito vacío';
     return;
   }
   var tot = 0, items = 0, h = '';
+  var tagLabel = { Producto:'', Promo:'[P] ', Libre:'[Libre] ', Prestamo:'[Préstamo] ' };
   CART.forEach(function(c, i) {
     var sub = c.pe * c.q; tot += sub; items += c.q;
-    h += '<div class="ci"><div><div class="ci-nom">' + (c.t === 'Promo' ? '[P] ' : '') + c.n + '</div>'
+    var estado = c.estado || 'Pagado';
+    var estColor = estado === 'Pagado' ? 'var(--green)' : (estado === 'Fiado' ? 'var(--amber)' : 'var(--blue)');
+    h += '<div class="ci"><div><div class="ci-nom">' + (tagLabel[c.t] || '') + c.n + '</div>'
       + '<div class="ci-meta">Precio: <input class="prc-inp" type="number" value="' + c.pe.toFixed(2) + '" step="0.5" min="0" onchange="edP(' + i + ',this.value)"></div></div>'
       + '<div class="ci-r"><div class="ci-tot">' + fmtMoney(sub) + '</div>'
+      + '<button class="chip" onclick="chE(' + i + ')" style="border-color:' + estColor + ';color:' + estColor + ';font-size:10px;padding:2px 8px;margin:2px 0" title="Click para cambiar">' + estado + '</button>'
       + '<div class="ci-ctr"><button class="qq" onclick="chQ(' + i + ',-1)">−</button><span class="qn">' + c.q + '</span><button class="qq" onclick="chQ(' + i + ',1)">+</button>'
       + '<button class="ci-del" onclick="rmC(' + i + ')">×</button></div></div></div>';
   });
@@ -1942,8 +2076,29 @@ function renderCart() {
   $('cSub').textContent = fmtMoney(tot);
   $('cItems').textContent = items + ' u';
   $('totBig').classList.toggle('has-amount', tot > 0);
-  $('btnReg').disabled = false;
-  $('btnReg').textContent = 'Cobrar ' + items + ' items · ' + fmtMoney(tot);
+  actualizarBotonCobrar();
+}
+// v9 — recalcula el reparto de pago / mensaje de fiado / estado del botón "Cobrar".
+// Separado de renderCart para poder llamarse también al teclear el nombre del cliente.
+function actualizarBotonCobrar() {
+  if (!CART.length) return;
+  var tot = 0, items = 0, subtotalPagado = 0;
+  CART.forEach(function(c) {
+    var sub = c.pe * c.q; tot += sub; items += c.q;
+    if ((c.estado || 'Pagado') === 'Pagado') subtotalPagado += sub;
+  });
+  var subtotalFiado = Math.round((tot - subtotalPagado) * 100) / 100;
+  subtotalPagado = Math.round(subtotalPagado * 100) / 100;
+  if ($('cFiadoNote')) {
+    $('cFiadoNote').style.display = subtotalFiado > 0.001 ? 'block' : 'none';
+    $('cFiadoNote').textContent = 'Quedará fiado: ' + fmtMoney(subtotalFiado) + ' — indica el cliente ↓';
+  }
+  pagoSplitSetEsperado('cartPagoSplit', subtotalPagado);
+  var okPago = subtotalPagado <= 0.001 || pagoSplitOk('cartPagoSplit');
+  var clienteOk = subtotalFiado <= 0.001 || (($('cliente') && $('cliente').value) || '').trim().length > 0;
+  $('btnReg').disabled = !(okPago && clienteOk);
+  $('btnReg').textContent = !clienteOk ? 'Falta indicar cliente (fiado)'
+    : (!okPago ? 'El reparto de pago no cuadra' : 'Cobrar ' + items + ' items · ' + fmtMoney(tot));
 }
 function chQ(i, d) { CART[i].q = Math.max(1, CART[i].q + d); renderCart(); updPill(); renderGrid(); }
 function rmC(i) { CART.splice(i, 1); renderCart(); updPill(); renderGrid(); }
@@ -1969,33 +2124,47 @@ function cerrarCarrito() {
 
 function registrar() {
   if (!CART.length) { toast('El carrito está vacío', 'err'); return; }
+  var tot = 0, subtotalPagado = 0;
+  CART.forEach(function(c) {
+    var sub = c.pe * c.q; tot += sub;
+    if ((c.estado || 'Pagado') === 'Pagado') subtotalPagado += sub;
+  });
+  subtotalPagado = Math.round(subtotalPagado * 100) / 100;
+  var subtotalFiado = Math.round((tot - subtotalPagado) * 100) / 100;
+  var cliente = ($('cliente').value || '').trim();
+  if (subtotalFiado > 0.001 && !cliente) { toast('Indica el cliente para dejar artículos fiados', 'err'); return; }
+  if (subtotalPagado > 0.001 && !pagoSplitOk('cartPagoSplit')) { toast('El reparto de pago no cuadra con el total a cobrar ahora', 'err'); return; }
+  var pagos = subtotalPagado > 0.001 ? pagoSplitGet('cartPagoSplit') : [];
+
   var btn = $('btnReg'); btn.disabled = true; var orig = btn.textContent; btn.textContent = 'Registrando...';
   var data = {
-    items: CART.map(function(c) { return { nombre:c.n, precio:c.pe, tipo:c.t, cantidad:c.q }; }),
-    metodo: $('metodo').value, estado: $('estado').value,
-    cliente: $('cliente').value, notas: $('notasV').value
+    items: CART.map(function(c) { return { nombre:c.n, precio:c.pe, tipo:c.t, cantidad:c.q, estado:c.estado || 'Pagado' }; }),
+    pagos: pagos,
+    cliente: cliente, notas: $('notasV').value
   };
   callBackend('registrarVenta', [data], { timeoutMs: 30000 })
     .then(function(r) {
       btn.disabled = false; btn.textContent = orig;
       if (r.ok) {
-        var tot = CART.reduce(function(s, c) { return s + c.pe * c.q; }, 0);
         toast('Registrado · ' + fmtMoney(tot), 'ok');
+        var todosFiado = CART.every(function(c) { return (c.estado || 'Pagado') !== 'Pagado'; });
         // Preparar contexto del recibo
         RECIBO_CTX = {
-          modo: data.estado === 'Pagado' ? 'pago' : 'adeudo',
+          modo: todosFiado ? 'adeudo' : 'pago',
           folio: r.folio,
           fecha: new Date(),
           cliente: data.cliente,
           notas: data.notas,
-          metodo: data.metodo,
-          estado: data.estado,
-          items: CART.map(function(c) { return { n:c.n, q:c.q, p:c.pe, sub:c.pe*c.q, t:c.t }; }),
+          metodoPagos: r.pagos || [],
+          estado: todosFiado ? 'Fiado' : (r.subtotalFiado > 0.001 ? 'Parcial' : 'Pagado'),
+          items: CART.map(function(c) { return { n:c.n, q:c.q, p:c.pe, sub:c.pe*c.q, t:c.t, estado:c.estado || 'Pagado' }; }),
           total: tot,
+          subtotalPagado: r.subtotalPagado, subtotalFiado: r.subtotalFiado,
           mensaje: ''
         };
         CART = []; renderCart(); updPill(); renderGrid();
         $('cliente').value = ''; $('notasV').value = '';
+        pagoSplitInit('cartPagoSplit', 0, actualizarBotonCobrar);
         abrirRecibo(RECIBO_CTX.modo);
         setTimeout(function() { $('srch').focus(); }, 200);
       } else toast('Error: ' + r.err, 'err', { retry: registrar });
@@ -2004,6 +2173,65 @@ function registrar() {
       btn.disabled = false; btn.textContent = orig;
       toast('Error: ' + (e.message || e), 'err', { retry: registrar });
     });
+}
+
+// ════════════════════════════════════════════════
+// v9 — VENTA LIBRE (fuera de catálogo) y PRÉSTAMOS
+// Ambos reutilizan registrarVenta con tipo 'Libre'/'Prestamo': sin costo
+// conocido, no tocan Inventario, y quedan fuera de los reportes de
+// producto/margen (ver getReportes* en Code.gs).
+// ════════════════════════════════════════════════
+function abrirVentaLibre() {
+  $('vl_nombre').value = ''; $('vl_precio').value = ''; $('vl_cantidad').value = '1';
+  $('vlMsg').className = 'msg';
+  $('ventaLibreModal').classList.add('on');
+  setTimeout(function() { $('vl_nombre').focus(); }, 100);
+}
+function cerrarVentaLibre() { $('ventaLibreModal').classList.remove('on'); }
+function agregarVentaLibre() {
+  var nombre = ($('vl_nombre').value || '').trim();
+  var precio = parseFloat($('vl_precio').value) || 0;
+  var cantidad = parseInt($('vl_cantidad').value) || 1;
+  if (!nombre) { showMsg('vlMsg', 'Falta el nombre del artículo', 'err'); return; }
+  if (precio <= 0) { showMsg('vlMsg', 'El precio debe ser mayor a 0', 'err'); return; }
+  CART.push({ n: nombre, p: precio, pe: precio, co: 0, t: 'Libre', q: cantidad, estado: 'Pagado' });
+  renderCart(); updPill(); renderGrid();
+  cerrarVentaLibre();
+  abrirCarrito();
+  toast(nombre + ' agregado al carrito (venta libre)', 'ok');
+}
+function abrirPrestamo() {
+  $('pr_cliente').value = ''; $('pr_monto').value = ''; $('pr_notas').value = '';
+  $('prMsg').className = 'msg';
+  $('prestamoModal').classList.add('on');
+  setTimeout(function() { $('pr_cliente').focus(); }, 100);
+}
+function cerrarPrestamo() { $('prestamoModal').classList.remove('on'); }
+function registrarPrestamo(btn) {
+  var cliente = ($('pr_cliente').value || '').trim();
+  var monto = parseFloat($('pr_monto').value) || 0;
+  var notas = ($('pr_notas').value || '').trim();
+  if (!cliente) { showMsg('prMsg', 'Falta el nombre del cliente', 'err'); return; }
+  if (monto <= 0) { showMsg('prMsg', 'El monto debe ser mayor a 0', 'err'); return; }
+  if (btn) btn.disabled = true;
+  callBackend('registrarVenta', [{
+    items: [{ nombre: 'Préstamo', tipo: 'Prestamo', cantidad: 1, precio: monto, estado: 'Fiado' }],
+    pagos: [], cliente: cliente, notas: notas
+  }], { timeoutMs: 20000 })
+    .then(function(r) {
+      if (btn) btn.disabled = false;
+      if (!r.ok) { showMsg('prMsg', 'Error: ' + r.err, 'err'); return; }
+      toast('Préstamo de ' + fmtMoney(monto) + ' registrado para ' + cliente, 'ok');
+      RECIBO_CTX = {
+        modo: 'adeudo', folio: r.folio, fecha: new Date(), cliente: cliente, notas: notas,
+        metodoPagos: [], estado: 'Fiado',
+        items: [{ n: 'Préstamo', q: 1, p: monto, sub: monto, t: 'Prestamo', estado: 'Fiado' }],
+        total: monto, subtotalPagado: 0, subtotalFiado: monto, mensaje: ''
+      };
+      cerrarPrestamo();
+      abrirRecibo('adeudo');
+    })
+    .catch(function(e) { if (btn) btn.disabled = false; showMsg('prMsg', 'Error: ' + (e.message || e), 'err'); });
 }
 
 // ════════════════════════════════════════════════
@@ -2096,40 +2324,70 @@ function vF(i) {
   $('fDRows').innerHTML = FA.items.map(function(it) {
     return '<tr><td class="muted">' + it.fecha + '</td><td>' + it.art + '</td><td class="mono" style="text-align:right">' + it.cant + '</td><td class="green">' + fmtMoney(it.tot) + '</td><td class="muted">' + it.metodo + '</td></tr>';
   }).join('');
-  $('fDTot').innerHTML = '<div class="flex-sb"><span style="font-family:var(--font-h);font-weight:700;color:var(--muted)">TOTAL ADEUDADO</span><span style="font-family:var(--font-m);font-size:22px;font-weight:700;color:var(--amber)">' + fmtMoney(FA.tot) + '</span></div>';
+  var totHtml = '<div class="flex-sb"><span style="font-family:var(--font-h);font-weight:700;color:var(--muted)">SALDO PENDIENTE</span><span style="font-family:var(--font-m);font-size:22px;font-weight:700;color:var(--amber)">' + fmtMoney(FA.tot) + '</span></div>';
+  if (FA.credito > 0.001) {
+    totHtml += '<div class="flex-sb" style="margin-top:4px;font-size:11px;color:var(--muted)"><span>Ya tiene abonado (crédito en camino a la ficha más vieja)</span><span>' + fmtMoney(FA.credito) + '</span></div>';
+  }
+  $('fDTot').innerHTML = totHtml;
   $('fMsg').className = 'msg';
+  // v9 — panel de abono: precargado con el total, editable a la baja, con reparto de métodos.
+  $('fMonto').value = FA.tot.toFixed(2);
+  pagoSplitInit('fPagoSplit', FA.tot, fActualizarBotonAbono);
+  fActualizarBotonAbono();
   $('fiadosList').style.display = 'none'; $('fiadoDet').style.display = 'block';
 }
 function bkF() { $('fiadoDet').style.display = 'none'; $('fiadosList').style.display = 'block'; FA = null; }
-function pgTodo() {
-  if (!FA || !confirm('¿Marcar todo de ' + FA.cli + ' como Pagado?')) return;
-  // v8.2 — Snapshot ANTES de pegarle al backend (porque bkF() limpia FA).
-  var snap = { cli: FA.cli, items: FA.items.slice(), tot: FA.tot };
-  callBackend('marcarPagado', [FA.items.map(function(it){return it.row;})]).then(function(r) {
-    $('fMsg').textContent = r.msg; $('fMsg').className = 'msg ' + (r.ok ? 'ok' : 'err');
+function fPagarTodo() {
+  if (!FA) return;
+  $('fMonto').value = FA.tot.toFixed(2);
+  fMontoChange();
+}
+function fMontoChange() {
+  var monto = Math.round((parseFloat($('fMonto').value) || 0) * 100) / 100;
+  pagoSplitSetEsperado('fPagoSplit', monto);
+  fActualizarBotonAbono();
+}
+function fActualizarBotonAbono() {
+  if (!FA) return;
+  var monto = Math.round((parseFloat($('fMonto').value) || 0) * 100) / 100;
+  var ok = monto > 0.001 && monto <= FA.tot + 0.01 && pagoSplitOk('fPagoSplit');
+  $('btnAbono').disabled = !ok;
+  $('btnAbono').textContent = monto > FA.tot + 0.01 ? 'El monto no puede ser mayor al saldo'
+    : (!pagoSplitOk('fPagoSplit') ? 'El reparto de pago no cuadra' : 'Registrar abono de ' + fmtMoney(monto));
+}
+function registrarAbonoUI() {
+  if (!FA) return;
+  var monto = Math.round((parseFloat($('fMonto').value) || 0) * 100) / 100;
+  if (monto <= 0 || monto > FA.tot + 0.01 || !pagoSplitOk('fPagoSplit')) { fActualizarBotonAbono(); return; }
+  var pagos = pagoSplitGet('fPagoSplit');
+  var cliente = FA.cli;
+  var btn = $('btnAbono'); btn.disabled = true; var orig = btn.textContent; btn.textContent = 'Registrando...';
+  callBackend('registrarAbono', [{ cliente: cliente, pagos: pagos, notas: '' }]).then(function(r) {
+    btn.disabled = false; btn.textContent = orig;
+    $('fMsg').textContent = r.msg || r.err; $('fMsg').className = 'msg ' + (r.ok ? 'ok' : 'err');
     if (r.ok) {
       setTimeout(function() {
         bkF(); loadFiados();
-        // v8.2 — Generar recibo "Pagado" automáticamente con los items que se acaban de saldar.
-        var folioFirst = (snap.items[0] && snap.items[0].folio) || '';
-        var now = new Date();
         RECIBO_CTX = {
           modo: 'pago',
-          folio: 'PAGO-' + now.getFullYear() + String(now.getMonth()+1).padStart(2,'0') + String(now.getDate()).padStart(2,'0') + (folioFirst ? '-' + folioFirst : ''),
-          fecha: now,
-          cliente: snap.cli,
-          notas: 'Pago de ' + snap.items.length + (snap.items.length === 1 ? ' ticket' : ' tickets') + ' pendientes',
-          metodo: 'Pago de adeudo',
+          folio: r.folio,
+          fecha: new Date(),
+          cliente: r.cliente,
+          notas: '',
+          metodoPagos: r.pagos || [],
           estado: 'Pagado',
-          items: snap.items.map(function(it) {
-            return { n: it.art, q: Number(it.cant) || 1, p: Number(it.precio) || 0, sub: Number(it.tot) || 0, t: 'Producto' };
-          }),
-          total: snap.tot,
+          items: [{ n: 'Abono a cuenta', q: 1, p: r.monto, sub: r.monto, t: 'Abono' }],
+          total: r.monto,
+          subtotalPagado: r.monto, subtotalFiado: 0,
+          abono: { saldoAntes: r.saldoAntes, monto: r.monto, saldoDespues: r.saldoDespues, ticketsCerrados: r.ticketsCerrados || [] },
           mensaje: ''
         };
         abrirRecibo('pago');
       }, 700);
     }
+  }).catch(function(e) {
+    btn.disabled = false; btn.textContent = orig;
+    $('fMsg').textContent = 'Error: ' + (e.message || e); $('fMsg').className = 'msg err';
   });
 }
 function copWA() {
@@ -2243,7 +2501,8 @@ function loadReportes() {
       kpiHtml('Ventas', fmtMoney(d.totalV), d.totalTickets + ' tickets', 'green') +
       kpiHtml('Ganancia', fmtMoney(d.totalG), '', d.totalG >= 0 ? 'green' : 'red') +
       kpiHtml('Margen', d.margen.toFixed(1) + '%', '', mc) +
-      kpiHtml('Ticket promedio', fmtMoney(d.ticketPromedio), '', '');
+      kpiHtml('Ticket promedio', fmtMoney(d.ticketPromedio), '', '') +
+      (d.totalPrestamos > 0.001 ? kpiHtml('Préstamos dados', fmtMoney(d.totalPrestamos), 'no cuenta como venta', 'amber') : '');
 
     var isLight = document.documentElement.getAttribute('data-theme') === 'light';
     var greenRGBA = function(a) { return isLight ? 'oklch(0.55 0.16 142 / ' + a + ')' : 'oklch(0.82 0.17 142 / ' + a + ')'; };
@@ -3143,12 +3402,16 @@ function renderRecibo() {
   }
   h += '<div class="t-sub">' + esc(subt) + '</div>';
   h += '</div>';
-  h += '<div style="text-align:center"><span class="t-badge ' + ctx.modo + '">' + (ctx.modo === 'pago' ? '✓ PAGADO' : '○ POR PAGAR') + '</span></div>';
+  // v9 — badge distingue pago parcial (algunos artículos pagados, otros quedaron fiados).
+  var esParcial = ctx.modo === 'pago' && ctx.subtotalFiado > 0.001;
+  var badgeTxt = ctx.modo === 'pago' ? (esParcial ? '◐ PAGO PARCIAL' : '✓ PAGADO') : '○ POR PAGAR';
+  h += '<div style="text-align:center"><span class="t-badge ' + ctx.modo + '">' + badgeTxt + '</span></div>';
   h += '<div class="t-meta"><span>Folio ' + esc(ctx.folio || '—') + '</span><span>' + esc(fStr) + '</span></div>';
   if (ctx.cliente) h += '<div class="t-customer">Para: <b>' + esc(ctx.cliente) + '</b></div>';
   h += '<table class="t-items"><colgroup><col class="c-qty"><col><col class="c-prc"><col class="c-tot"></colgroup><thead><tr><th>Qty</th><th>Producto</th><th style="text-align:right">Precio</th><th style="text-align:right">Total</th></tr></thead><tbody>';
   ctx.items.forEach(function(it) {
-    h += '<tr><td class="qty">' + esc(it.q) + '</td><td>' + esc(it.n) + '</td><td class="prc">' + fmtMoney(it.p) + '</td><td class="tot">' + fmtMoney(it.sub) + '</td></tr>';
+    var marcaFiado = it.estado && it.estado !== 'Pagado' ? ' <span style="opacity:.65;font-size:10px">(' + esc(it.estado) + ')</span>' : '';
+    h += '<tr><td class="qty">' + esc(it.q) + '</td><td>' + esc(it.n) + marcaFiado + '</td><td class="prc">' + fmtMoney(it.p) + '</td><td class="tot">' + fmtMoney(it.sub) + '</td></tr>';
   });
   h += '</tbody></table>';
   h += '<div class="t-totals">';
@@ -3156,6 +3419,29 @@ function renderRecibo() {
   h += '<div class="row"><span class="lbl">Items</span><span class="val">' + ctx.items.reduce(function(s, it) { return s + (Number(it.q) || 0); }, 0) + '</span></div>';
   h += '<div class="row big ' + ctx.modo + '"><span class="lbl">TOTAL</span><span class="val">' + fmtMoney(ctx.total) + '</span></div>';
   h += '</div>';
+  // v9 — desglose de método(s) de pago (útil sobre todo cuando es "Mixto").
+  if (ctx.metodoPagos && ctx.metodoPagos.length) {
+    h += '<div class="t-totals" style="margin-top:-6px"><div class="row"><span class="lbl">Pagado con</span><span class="val"></span></div>';
+    ctx.metodoPagos.forEach(function(p) {
+      h += '<div class="row"><span class="lbl" style="padding-left:10px;opacity:.85">' + esc(p.metodo) + '</span><span class="val">' + fmtMoney(p.monto) + '</span></div>';
+    });
+    h += '</div>';
+  }
+  if (esParcial) {
+    h += '<div class="t-totals" style="margin-top:-6px"><div class="row"><span class="lbl" style="color:var(--amber)">Queda pendiente</span><span class="val" style="color:var(--amber)">' + fmtMoney(ctx.subtotalFiado) + '</span></div></div>';
+  }
+  // v9 — recibo de abono: saldo anterior / abonado / saldo restante + qué tickets se saldaron.
+  if (ctx.abono) {
+    h += '<div class="t-totals" style="margin-top:-6px">';
+    h += '<div class="row"><span class="lbl">Saldo anterior</span><span class="val">' + fmtMoney(ctx.abono.saldoAntes) + '</span></div>';
+    h += '<div class="row"><span class="lbl">Abono recibido</span><span class="val">-' + fmtMoney(ctx.abono.monto) + '</span></div>';
+    h += '<div class="row big"><span class="lbl">Saldo restante</span><span class="val">' + fmtMoney(ctx.abono.saldoDespues) + '</span></div>';
+    h += '</div>';
+    if (ctx.abono.ticketsCerrados && ctx.abono.ticketsCerrados.length) {
+      var foliosSaldados = ctx.abono.ticketsCerrados.map(function(t) { return t.folio; }).filter(function(v, idx, arr) { return v && arr.indexOf(v) === idx; });
+      h += '<div class="t-notes"><div class="t-pay-title">Tickets saldados</div><div>' + esc(foliosSaldados.join(', ') || '—') + '</div></div>';
+    }
+  }
   if ($('recibo_mensaje').value) h += '<div class="t-msg">' + esc($('recibo_mensaje').value) + '</div>';
 
   if (ctx.modo === 'adeudo') {
@@ -3291,7 +3577,21 @@ function construirTextoRecibo(compact) {
     });
     lines.push('━━━━━━━━━━━━━━━━━━━');
     lines.push('*TOTAL: ' + fmtMoney(ctx.total) + '*');
-    lines.push(ctx.modo === 'pago' ? '✓ PAGADO' : '○ POR PAGAR');
+    lines.push(ctx.modo === 'pago' ? (ctx.subtotalFiado > 0.001 ? '◐ PAGO PARCIAL' : '✓ PAGADO') : '○ POR PAGAR');
+    // v9 — desglose de método(s) + contexto de abono, si aplica.
+    if (ctx.metodoPagos && ctx.metodoPagos.length) {
+      lines.push('Pagado con: ' + ctx.metodoPagos.map(function(p) { return p.metodo + ' ' + fmtMoney(p.monto); }).join(' + '));
+    }
+    if (ctx.subtotalFiado > 0.001 && ctx.modo === 'pago') {
+      lines.push('Queda pendiente: ' + fmtMoney(ctx.subtotalFiado));
+    }
+    if (ctx.abono) {
+      lines.push('Saldo anterior: ' + fmtMoney(ctx.abono.saldoAntes) + ' → Saldo restante: ' + fmtMoney(ctx.abono.saldoDespues));
+      if (ctx.abono.ticketsCerrados && ctx.abono.ticketsCerrados.length) {
+        var foliosSaldados = ctx.abono.ticketsCerrados.map(function(t) { return t.folio; }).filter(function(v, idx, arr) { return v && arr.indexOf(v) === idx; });
+        if (foliosSaldados.length) lines.push('Tickets saldados: ' + foliosSaldados.join(', '));
+      }
+    }
     if (ctx.modo === 'adeudo') {
       lines.push('');
       lines.push('Formas de pago:');
@@ -3358,7 +3658,17 @@ async function descargarPNG(paleta) {
   var a = document.createElement('a'); a.href = dataUrl;
   a.download = 'recibo-' + (RECIBO_CTX.folio || 'x') + '-' + paleta + '.png';
   a.click();
-  toast('PNG descargado', 'ok');
+  // v9 — además de descargar, copiarlo al portapapeles (best-effort) para pegarlo
+  // directo en WhatsApp/otra app, tanto en PC como en celular (Chrome/Android/desktop).
+  var copiado = false;
+  try {
+    if (navigator.clipboard && window.ClipboardItem) {
+      var blob = await (await fetch(dataUrl)).blob();
+      await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
+      copiado = true;
+    }
+  } catch (e) { /* navegador sin soporte (ej. Safari viejo) — no bloquea la descarga */ }
+  toast(copiado ? 'Descargado y copiado al portapapeles ✓' : 'PNG descargado', 'ok');
 }
 function enviarPorCorreo() {
   if (!RECIBO_CTX) return;
