@@ -967,14 +967,6 @@ function getFiados() {
   } catch (e) { return { ok: false, err: String(e), lista: [], total: 0 }; }
 }
 
-function marcarPagado(rows) {
-  try {
-    var sh = _ss().getSheetByName('Ventas');
-    rows.forEach(function(r) { sh.getRange(r, 13).setValue('Pagado'); });
-    return { ok: true, msg: rows.length + ' ventas marcadas como Pagado.' };
-  } catch (e) { return { ok: false, msg: String(e) }; }
-}
-
 // ══════════════════════════════════════════════
 //  API: REPORTES
 // ══════════════════════════════════════════════
