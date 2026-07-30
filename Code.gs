@@ -68,9 +68,10 @@ function actualizarEstructura() {
     '3. Agregar columna J=archivado a Catálogo\n' +
     '4. Crear hoja "Promos_Items" (vacía)\n' +
     '5. Crear hoja "Configuracion" (vacía)\n' +
-    '6. Recalcular costos snapshot de ventas históricas (usa costo actual de Catálogo como aproximación)\n' +
-    '7. Asignar folios retroactivos agrupando por fecha+hora+cliente+método\n' +
-    '8. Reemplazar fórmulas con rangos $F$500 por rangos de columna entera\n\n' +
+    '6. Crear hoja "Pagos" (ledger de pagos mixtos/abonos, vacía)\n' +
+    '7. Recalcular costos snapshot de ventas históricas (usa costo actual de Catálogo como aproximación)\n' +
+    '8. Asignar folios retroactivos agrupando por fecha+hora+cliente+método\n' +
+    '9. Reemplazar fórmulas con rangos $F$500 por rangos de columna entera\n\n' +
     'Los datos existentes NO se borran. Las funciones del backend siguen igual.\n\n' +
     '¿Continuar?',
     ui.ButtonSet.YES_NO);
@@ -131,7 +132,10 @@ function actualizarEstructura() {
       cfg.getRange(2, 1, defaults.length, 3).setValues(defaults);
     }
 
-    // 6. Costo snapshot retroactivo (lee Catalogo y rellena col P)
+    // 6. Hoja Pagos (ledger de pagos mixtos/abonos) — v9
+    _pagosSheet();
+
+    // 7. Costo snapshot retroactivo (lee Catalogo y rellena col P)
     var scan = _scanCatalogoSheet(cat);
     var prodMap = {};
     var pData = cat.getRange(scan.prodStart, 1, scan.prodEnd - scan.prodStart + 1, 9).getValues();
@@ -201,7 +205,7 @@ function actualizarEstructura() {
       ventas.getRange(startRow, 10, formulas.length, 2).setFormulas(formulas);
     }
 
-    // 7. Reemplazar fórmulas con $F$500 por columna entera en Inventario
+    // 8. Reemplazar fórmulas con $F$500 por columna entera en Inventario
     var inv = ss.getSheetByName('Inventario');
     if (inv) {
       var invLast = inv.getLastRow();
@@ -373,6 +377,119 @@ function _nuevoFolio() {
 }
 
 // ══════════════════════════════════════════════
+//  v9 — LÓGICA PURA DE DINERO (sin SpreadsheetApp, testeable con Node)
+//  Pago mixto/parcial + abonos con saldo FIFO.
+// ══════════════════════════════════════════════
+var MONEY_EPS = 0.01;
+
+/** Limpia/normaliza un array de { metodo, monto } — descarta montos <= 0. */
+function _limpiarPagos(pagos) {
+  var limpio = (pagos || [])
+    .map(function(p) {
+      return {
+        metodo: String((p && p.metodo) || '').trim() || 'Efectivo',
+        monto: Math.round((Number(p && p.monto) || 0) * 100) / 100
+      };
+    })
+    .filter(function(p) { return p.monto > 0.0001; });
+  var suma = Math.round(limpio.reduce(function(s, p) { return s + p.monto; }, 0) * 100) / 100;
+  return { pagos: limpio, suma: suma };
+}
+
+/** Valida que el reparto de métodos cuadre exactamente con el subtotal a pagar de una venta. */
+function _validarRepartoVenta(pagos, esperado) {
+  var L = _limpiarPagos(pagos);
+  var esperadoR = Math.round((Number(esperado) || 0) * 100) / 100;
+  var diff = Math.round((esperadoR - L.suma) * 100) / 100;
+  return { ok: Math.abs(diff) < MONEY_EPS, pagos: L.pagos, suma: L.suma, esperado: esperadoR, diff: diff };
+}
+
+function _metodoEtiquetaDePagos(pagos) {
+  if (!pagos || !pagos.length) return '';
+  if (pagos.length === 1) return pagos[0].metodo;
+  return 'Mixto';
+}
+
+/**
+ * FIFO de abonos: aplica crédito disponible (abono nuevo + crédito que venía de antes,
+ * sin alcanzar a cerrar la fila más vieja) contra filas pendientes ordenadas más-viejo-
+ * primero. Nunca reparte una fila a la mitad: o la cierra completa, o la deja como está
+ * y el resto del dinero queda como crédito para el siguiente abono.
+ *
+ * filasPendientes: [{ row, total, fecha }]
+ * Devuelve { cerradas:[row,...], creditoRestante }
+ */
+function _aplicarAbonoFIFO(filasPendientes, creditoPrevio, montoNuevoAbono) {
+  var disponible = Math.round(((Number(creditoPrevio) || 0) + (Number(montoNuevoAbono) || 0)) * 100) / 100;
+  var cerradas = [];
+  var ordenadas = (filasPendientes || []).slice().sort(function(a, b) {
+    if (a.fecha && b.fecha && a.fecha - b.fecha !== 0) return a.fecha - b.fecha;
+    return a.row - b.row;
+  });
+  for (var i = 0; i < ordenadas.length; i++) {
+    var tot = Math.round(Number(ordenadas[i].total) * 100) / 100;
+    if (disponible + MONEY_EPS >= tot) {
+      cerradas.push(ordenadas[i].row);
+      disponible = Math.round((disponible - tot) * 100) / 100;
+    } else {
+      break; // FIFO estricto: si no alcanza para esta, no nos saltamos a la siguiente.
+    }
+  }
+  return { cerradas: cerradas, creditoRestante: Math.max(0, disponible) };
+}
+
+// ══════════════════════════════════════════════
+//  API: LEDGER DE PAGOS (hoja "Pagos")
+// ══════════════════════════════════════════════
+function _pagosSheet() {
+  var ss = _ss();
+  var sh = ss.getSheetByName('Pagos');
+  if (!sh) {
+    sh = ss.insertSheet('Pagos');
+    sh.getRange(1, 1, 1, 10).setValues([[
+      'Fecha', 'FolioMov', 'TipoMov', 'Cliente', 'Metodo', 'Monto', 'Notas',
+      'FolioVentaRef', 'CreditoRestante', 'FilasCerradas'
+    ]]);
+    sh.setFrozenRows(1);
+    sh.getRange(1, 1, 1, 10).setBackground('#1E2A1E').setFontColor('#6DFF1A').setFontWeight('bold');
+  }
+  return sh;
+}
+
+/**
+ * Escribe una fila por cada método usado en un cobro (venta o abono). Así un cobro
+ * mixto ($60 efectivo + $40 transferencia) queda trazable exactamente, sin forzar
+ * una sola columna Método en Ventas.
+ */
+function _registrarPagosLedger(args) {
+  var sh = _pagosSheet();
+  var now = new Date();
+  var creditoRestante = args.creditoRestante !== undefined ? args.creditoRestante : '';
+  var filasCerradas = (args.filasCerradas && args.filasCerradas.length) ? args.filasCerradas.join(',') : '';
+  var rows = args.pagos.map(function(p) {
+    return [now, args.folioMov, args.tipoMov, args.cliente || '', p.metodo, p.monto, args.notas || '', args.folioVentaRef || '', creditoRestante, filasCerradas];
+  });
+  sh.getRange(sh.getLastRow() + 1, 1, rows.length, 10).setValues(rows);
+}
+
+/** Crédito acumulado de abonos que aún no alcanza para cerrar la fila fiada más vieja. */
+function _leerCreditoCliente(cliente) {
+  try {
+    var sh = _ss().getSheetByName('Pagos');
+    if (!sh || sh.getLastRow() < 2) return 0;
+    var data = sh.getRange(2, 1, sh.getLastRow() - 1, 10).getValues();
+    var credito = 0;
+    var nom = cliente.trim().toLowerCase();
+    for (var i = 0; i < data.length; i++) {
+      if (String(data[i][2]) === 'abono' && String(data[i][3] || '').trim().toLowerCase() === nom) {
+        credito = Number(data[i][8]) || 0; // filas en orden cronológico → la última gana
+      }
+    }
+    return credito;
+  } catch (e) { return 0; }
+}
+
+// ══════════════════════════════════════════════
 //  API: CATALOGO / CLIENTES / CONFIG
 // ══════════════════════════════════════════════
 function getCatalogo() {
@@ -447,9 +564,15 @@ function getPerfilCliente(nombre) {
       if (!ultimaCompra || fStr > ultimaCompra) ultimaCompra = fStr;
     }
     historial.reverse();
+    // v9 — restar crédito de abonos que aún no cierran ninguna fila fiada.
+    var credito = _leerCreditoCliente(nombre);
+    var totalPendienteReal = Math.max(0, Math.round((totalPendiente - credito) * 100) / 100);
     return {
       ok: true, datos: datos, historial: historial,
-      stats: { totalGastado: totalGastado, totalPendiente: totalPendiente, numTickets: Object.keys(numTickets).length, ultimaCompra: ultimaCompra, totalCompras: historial.length }
+      stats: {
+        totalGastado: totalGastado, totalPendiente: totalPendienteReal, totalPendienteBruto: totalPendiente,
+        credito: credito, numTickets: Object.keys(numTickets).length, ultimaCompra: ultimaCompra, totalCompras: historial.length
+      }
     };
   } catch (e) { return { ok: false, err: String(e) }; }
 }
@@ -565,6 +688,16 @@ function guardarConfiguracion(obj) {
 // ══════════════════════════════════════════════
 //  API: VENTAS
 // ══════════════════════════════════════════════
+/**
+ * v9 — Pago mixto/parcial: cada item trae su propio estado (Pagado / Fiado / Al rato
+ * te pago). El subtotal de los items "Pagado ahora" se reparte en d.pagos = [{metodo,
+ * monto}] (1 solo método = flujo de siempre; 2+ = pago mixto, Método queda "Mixto" y
+ * el detalle real se guarda en la hoja Pagos). Los items fiados requieren d.cliente.
+ *
+ * it.tipo acepta 'Producto' | 'Promo' | 'Libre' (venta fuera de catálogo) | 'Prestamo'
+ * (dinero prestado a un cliente) — estos dos últimos no tienen costo conocido (snapshot
+ * 0) y no afectan Inventario (sus fórmulas sólo suman Tipo="Producto").
+ */
 function registrarVenta(d) {
   try {
     var ss = _ss();
@@ -575,6 +708,32 @@ function registrarVenta(d) {
     var hora = Utilities.formatDate(now, tz, 'HH:mm');
     var start = _lastRow(sh) + 1;
     var folio = _nuevoFolio();
+
+    var items = d.items || [];
+    if (!items.length) return { ok: false, err: 'La venta no tiene artículos.' };
+
+    var ESTADOS_PENDIENTES = ['Fiado', 'Al rato te pago'];
+    var pendientes = items.filter(function(it) { return ESTADOS_PENDIENTES.indexOf(it.estado || 'Pagado') >= 0; });
+    if (pendientes.length && !(d.cliente && d.cliente.trim())) {
+      return { ok: false, err: 'Para dejar artículos fiados necesitas indicar el cliente.' };
+    }
+
+    var subtotalPagado = items.reduce(function(s, it) {
+      if (ESTADOS_PENDIENTES.indexOf(it.estado || 'Pagado') >= 0) return s;
+      return s + (Number(it.precio) || 0) * (Number(it.cantidad) || 0);
+    }, 0);
+
+    var reparto = { pagos: [], suma: 0 };
+    if (subtotalPagado > 0.0001) {
+      reparto = _validarRepartoVenta(d.pagos, subtotalPagado);
+      if (!reparto.ok) {
+        return {
+          ok: false,
+          err: 'El reparto de pago ($' + reparto.suma.toFixed(2) + ') no coincide con lo que hay que pagar ahora ($' + reparto.esperado.toFixed(2) + ').'
+        };
+      }
+    }
+    var metodoEtiqueta = _metodoEtiquetaDePagos(reparto.pagos);
 
     var scan = _scanCatalogoSheet(cat);
     // Cachear costos para snapshot
@@ -587,14 +746,20 @@ function registrarVenta(d) {
     });
 
     var rows = [];
-    d.items.forEach(function(it, idx) {
+    items.forEach(function(it, idx) {
       var r = start + idx;
-      var snap = it.tipo === 'Promo' ? (promoCost[it.nombre] || 0) : (prodCost[it.nombre] || 0);
+      var estado = it.estado || 'Pagado';
+      var esFiado = ESTADOS_PENDIENTES.indexOf(estado) >= 0;
+      var tipo = it.tipo || 'Producto';
+      var snap = 0;
+      if (tipo === 'Promo') snap = promoCost[it.nombre] || 0;
+      else if (tipo === 'Producto') snap = prodCost[it.nombre] || 0;
+      // 'Libre' y 'Prestamo': sin costo conocido, snapshot queda en 0.
       rows.push([
         now,                          // A Fecha
         hora,                          // B Hora
-        it.tipo,                       // C Tipo
-        '=IF(E' + r + '="","",IF(C' + r + '="Promo","Promo",IFERROR(VLOOKUP(E' + r + ',Catalogo!$B:$C,2,0),"Varios")))', // D Categoría
+        tipo,                          // C Tipo
+        '=IF(E' + r + '="","",IF(C' + r + '="Promo","Promo",IF(C' + r + '="Libre","Venta libre",IF(C' + r + '="Prestamo","Préstamo",IFERROR(VLOOKUP(E' + r + ',Catalogo!$B:$C,2,0),"Varios")))))', // D Categoría
         it.nombre,                     // E Artículo
         it.cantidad,                   // F Cant
         it.precio,                     // G Precio
@@ -602,8 +767,8 @@ function registrarVenta(d) {
         it.precio * it.cantidad,       // I Total
         '=IF(F' + r + '="","",F' + r + '*P' + r + ')',                  // J Costo Total
         '=IF(OR(F' + r + '="",J' + r + '=""),"",I' + r + '-J' + r + ')', // K Ganancia
-        d.metodo,                       // L Método
-        d.estado,                       // M Estado
+        esFiado ? '' : (metodoEtiqueta || 'Efectivo'), // L Método
+        estado,                         // M Estado
         d.cliente || '',                // N Cliente
         d.notas || '',                  // O Notas
         snap,                           // P Costo_Snapshot
@@ -617,11 +782,85 @@ function registrarVenta(d) {
 
     if (d.cliente && d.cliente.trim()) _autoCliente(d.cliente.trim());
 
+    if (reparto.pagos.length) {
+      _registrarPagosLedger({
+        folioMov: folio, tipoMov: 'venta', cliente: d.cliente || '',
+        pagos: reparto.pagos, notas: d.notas || '', folioVentaRef: folio
+      });
+    }
+
     // Si hay promos con componentes, descontar stock automáticamente vía actualización del cache
     // (las fórmulas de Inventario lo recogen al recalcular)
 
-    var total = d.items.reduce(function(s, it) { return s + it.precio * it.cantidad; }, 0);
-    return { ok: true, total: total, rows: rows.length, folio: folio };
+    var total = items.reduce(function(s, it) { return s + it.precio * it.cantidad; }, 0);
+    return {
+      ok: true, total: total, rows: rows.length, folio: folio,
+      pagos: reparto.pagos, subtotalPagado: subtotalPagado,
+      subtotalFiado: Math.round((total - subtotalPagado) * 100) / 100
+    };
+  } catch (e) { return { ok: false, err: String(e) }; }
+}
+
+/**
+ * v9 — Abono a un fiado existente. args = { cliente, pagos:[{metodo,monto}], notas }.
+ * El monto se reparte igual que en una venta (mixto permitido) y se aplica en FIFO
+ * contra las filas fiadas más viejas del cliente — ver _aplicarAbonoFIFO. Siempre
+ * genera su propio folio (AB-...) para que el frontend pueda armar un recibo.
+ */
+function registrarAbono(args) {
+  try {
+    var cliente = String((args && args.cliente) || '').trim();
+    if (!cliente) return { ok: false, err: 'Falta el nombre del cliente.' };
+    var L = _limpiarPagos(args && args.pagos);
+    if (!L.pagos.length || L.suma <= 0) return { ok: false, err: 'Agrega al menos un método de pago con monto mayor a 0.' };
+
+    var sh = _ss().getSheetByName('Ventas');
+    var data = sh.getDataRange().getValues();
+    var pendientes = [];
+    var totalPendienteBruto = 0;
+    for (var i = 3; i < data.length; i++) {
+      var row = data[i];
+      var art = String(row[4] || '').trim(); if (!art) continue;
+      var est = String(row[12] || '').trim();
+      if (est !== 'Fiado' && est !== 'Al rato te pago') continue;
+      if (String(row[13] || '').trim().toLowerCase() !== cliente.toLowerCase()) continue;
+      var tot = Number(row[8]) || 0;
+      pendientes.push({
+        row: i + 1, total: tot, fecha: row[0] instanceof Date ? row[0] : new Date(row[0]),
+        art: art, cant: Number(row[5]) || 0, precio: Number(row[6]) || 0, folio: String(row[16] || '')
+      });
+      totalPendienteBruto += tot;
+    }
+    if (!pendientes.length) return { ok: false, err: cliente + ' no tiene adeudos pendientes.' };
+
+    var creditoPrevio = _leerCreditoCliente(cliente);
+    var saldoAntes = Math.round((totalPendienteBruto - creditoPrevio) * 100) / 100;
+    if (L.suma > saldoAntes + MONEY_EPS) {
+      return { ok: false, err: 'El abono ($' + L.suma.toFixed(2) + ') es mayor al saldo pendiente de ' + cliente + ' ($' + saldoAntes.toFixed(2) + ').' };
+    }
+
+    var resultado = _aplicarAbonoFIFO(pendientes, creditoPrevio, L.suma);
+    resultado.cerradas.forEach(function(r) { sh.getRange(r, 13).setValue('Pagado'); });
+
+    var folioAbono = 'AB-' + Utilities.formatDate(new Date(), _tz(), 'yyyyMMdd') + '-' + String(Math.floor(Math.random() * 10000)).padStart(4, '0');
+    _registrarPagosLedger({
+      folioMov: folioAbono, tipoMov: 'abono', cliente: cliente,
+      pagos: L.pagos, notas: (args && args.notas) || '',
+      creditoRestante: resultado.creditoRestante, filasCerradas: resultado.cerradas
+    });
+
+    var saldoDespues = Math.max(0, Math.round((saldoAntes - L.suma) * 100) / 100);
+    var ticketsCerrados = pendientes
+      .filter(function(p) { return resultado.cerradas.indexOf(p.row) >= 0; })
+      .map(function(p) { return { n: p.art, q: p.cant, p: p.precio, sub: p.total, t: 'Producto', folio: p.folio }; });
+
+    return {
+      ok: true, folio: folioAbono, cliente: cliente,
+      monto: L.suma, pagos: L.pagos,
+      saldoAntes: saldoAntes, saldoDespues: saldoDespues,
+      ticketsCerrados: ticketsCerrados,
+      msg: 'Abono de $' + L.suma.toFixed(2) + ' registrado. Saldo restante de ' + cliente + ': $' + saldoDespues.toFixed(2)
+    };
   } catch (e) { return { ok: false, err: String(e) }; }
 }
 
@@ -697,7 +936,7 @@ function getFiados() {
   try {
     var sh = _ss().getSheetByName('Ventas');
     var data = sh.getDataRange().getValues();
-    var map = {}, total = 0;
+    var map = {};
     for (var i = 3; i < data.length; i++) {
       var art = String(data[i][4] || '').trim(); if (!art) continue;
       var est = String(data[i][12] || '').trim();
@@ -712,13 +951,18 @@ function getFiados() {
       });
       if (data[i][16]) map[cli].folios[String(data[i][16])] = true;
       map[cli].tot += tot;
-      total += tot;
     }
     var lista = Object.keys(map).map(function(k) {
       map[k].numFolios = Object.keys(map[k].folios).length;
       delete map[k].folios;
+      // v9 — restar crédito de abonos que ya entraron pero aún no cierran ninguna fila.
+      var credito = _leerCreditoCliente(map[k].cli);
+      map[k].totBruto = map[k].tot;
+      map[k].credito = credito;
+      map[k].tot = Math.max(0, Math.round((map[k].tot - credito) * 100) / 100);
       return map[k];
     }).sort(function(a, b) { return b.tot - a.tot; });
+    var total = lista.reduce(function(s, c) { return s + c.tot; }, 0);
     return { ok: true, lista: lista, total: total };
   } catch (e) { return { ok: false, err: String(e), lista: [], total: 0 }; }
 }
@@ -742,7 +986,7 @@ function getReportes(filtro) {
     var now = new Date();
     var hoy = Utilities.formatDate(now, tz, 'dd/MM/yyyy');
     var mes = Utilities.formatDate(now, tz, 'MM/yyyy');
-    var totalV = 0, totalG = 0, fiados = 0;
+    var totalV = 0, totalG = 0, fiados = 0, totalPrestamos = 0;
     var porProd = {}, porMetodo = {}, porCat = {}, porDia = {}, porHora = {};
 
     for (var i = 3; i < data.length; i++) {
@@ -752,20 +996,27 @@ function getReportes(filtro) {
       var fStr = _fmt(fecha); if (!fStr || fStr.length < 8) continue;
       if (filtro === 'hoy' && fStr !== hoy) continue;
       if (filtro === 'mes' && fStr.substring(3) !== mes) continue;
+      // v9 — Libre/Prestamo quedan fuera de las estadísticas de catálogo (ver plan).
+      var tipo = String(row[2] || '').trim();
       var v = Number(row[8]) || 0, g = Number(row[10]) || 0;
       var m = String(row[11] || 'Efectivo').trim();
       var cat = String(row[3] || '').trim();
       var e = String(row[12] || '').trim();
-      totalV += v; totalG += g;
       if (e === 'Fiado' || e === 'Al rato te pago') fiados += v;
+      if (tipo === 'Prestamo') { totalPrestamos += v; continue; } // no es ingreso, es dinero prestado
+      totalV += v;
+      if (tipo !== 'Libre') totalG += g; // sin costo conocido, no cuenta para margen
       porMetodo[m] = (porMetodo[m] || 0) + v;
       if (cat) porCat[cat] = (porCat[cat] || 0) + v;
-      if (!porProd[art]) porProd[art] = { cant: 0, total: 0, gan: 0 };
-      porProd[art].cant += Number(row[5]) || 1;
-      porProd[art].total += v;
-      porProd[art].gan += g;
+      if (tipo !== 'Libre') {
+        if (!porProd[art]) porProd[art] = { cant: 0, total: 0, gan: 0 };
+        porProd[art].cant += Number(row[5]) || 1;
+        porProd[art].total += v;
+        porProd[art].gan += g;
+      }
       if (!porDia[fStr]) porDia[fStr] = { v: 0, g: 0 };
-      porDia[fStr].v += v; porDia[fStr].g += g;
+      porDia[fStr].v += v;
+      if (tipo !== 'Libre') porDia[fStr].g += g;
       // Heatmap día-de-semana × hora
       var dow = fecha.getDay(); // 0=Domingo
       var horaStr = String(row[1] || '').substring(0, 2);
@@ -781,7 +1032,7 @@ function getReportes(filtro) {
       .map(function(k) { return { fecha: k, v: porDia[k].v, g: porDia[k].g }; }).slice(-30);
 
     return {
-      ok: true, totalV: totalV, totalG: totalG, fiados: fiados,
+      ok: true, totalV: totalV, totalG: totalG, fiados: fiados, totalPrestamos: totalPrestamos,
       margen: totalV > 0 ? (totalG / totalV * 100) : 0,
       top: top, porMetodo: porMetodo, porCat: porCat, dias: dias, porHora: porHora
     };
@@ -804,6 +1055,8 @@ function getReporteFiscal(inicio, fin) {
       var art = String(row[4] || '').trim(); if (!art) continue;
       var f = row[0] instanceof Date ? row[0] : new Date(row[0]);
       if (f < dIni || f > dFin) continue;
+      // v9 — Préstamos no son ingreso fiscal (es dinero prestado, no una venta); se excluyen.
+      if (String(row[2] || '').trim() === 'Prestamo') continue;
       var v = Number(row[8]) || 0, c = Number(row[9]) || 0, g = Number(row[10]) || 0;
       var m = String(row[11] || 'Efectivo').trim();
       var est = String(row[12] || 'Pagado').trim();
@@ -1206,7 +1459,7 @@ function getReporteAvanzado(opts) {
     var wd = (opts.weekdays && opts.weekdays.length) ? opts.weekdays : null;
     var dm = (opts.diaMes && opts.diaMes.length) ? opts.diaMes : null;
 
-    var totalV = 0, totalG = 0, totalC = 0, fiados = 0;
+    var totalV = 0, totalG = 0, totalC = 0, fiados = 0, totalPrestamos = 0;
     var porProd = {}, porMetodo = {}, porCat = {}, porDia = {}, porHora = {}, porWD = {};
     var foliosSet = {};
 
@@ -1221,6 +1474,8 @@ function getReporteAvanzado(opts) {
       if (wd && wd.indexOf(dayOfWeek) < 0) continue;
       if (dm && dm.indexOf(fecha.getDate()) < 0) continue;
 
+      // v9 — Libre/Prestamo quedan fuera de las estadísticas de catálogo (ver plan).
+      var tipo = String(row[2] || '').trim();
       var v = Number(row[8]) || 0, c = Number(row[9]) || 0, g = Number(row[10]) || 0;
       var m = String(row[11] || 'Efectivo').trim();
       var cat = String(row[3] || '').trim();
@@ -1230,16 +1485,22 @@ function getReporteAvanzado(opts) {
       var hh = parseInt(horaStr) || 0;
       var folio = String(row[16] || ('row' + i));
 
-      totalV += v; totalG += g; totalC += c;
       if (e === 'Fiado' || e === 'Al rato te pago') fiados += v;
+      if (tipo === 'Prestamo') { totalPrestamos += v; continue; } // no es ingreso, es dinero prestado
+
+      totalV += v;
+      if (tipo !== 'Libre') { totalG += g; totalC += c; }
       porMetodo[m] = (porMetodo[m] || 0) + v;
       if (cat) porCat[cat] = (porCat[cat] || 0) + v;
-      if (!porProd[art]) porProd[art] = { cant: 0, total: 0, gan: 0 };
-      porProd[art].cant += Number(row[5]) || 1;
-      porProd[art].total += v;
-      porProd[art].gan += g;
+      if (tipo !== 'Libre') {
+        if (!porProd[art]) porProd[art] = { cant: 0, total: 0, gan: 0 };
+        porProd[art].cant += Number(row[5]) || 1;
+        porProd[art].total += v;
+        porProd[art].gan += g;
+      }
       if (!porDia[fStr]) porDia[fStr] = { v: 0, g: 0, tickets: {} };
-      porDia[fStr].v += v; porDia[fStr].g += g;
+      porDia[fStr].v += v;
+      if (tipo !== 'Libre') porDia[fStr].g += g;
       porDia[fStr].tickets[folio] = true;
       foliosSet[folio] = true;
       var hKey = dayOfWeek + '_' + hh;
@@ -1255,7 +1516,7 @@ function getReporteAvanzado(opts) {
     var totalTickets = Object.keys(foliosSet).length;
 
     return {
-      ok: true, totalV: totalV, totalG: totalG, totalC: totalC, fiados: fiados,
+      ok: true, totalV: totalV, totalG: totalG, totalC: totalC, fiados: fiados, totalPrestamos: totalPrestamos,
       margen: totalV > 0 ? (totalG / totalV * 100) : 0,
       top: top, porMetodo: porMetodo, porCat: porCat,
       dias: diasArr, porHora: porHora, porWD: porWD,
