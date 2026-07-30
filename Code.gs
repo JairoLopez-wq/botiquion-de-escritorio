@@ -697,8 +697,17 @@ function guardarConfiguracion(obj) {
  * it.tipo acepta 'Producto' | 'Promo' | 'Libre' (venta fuera de catálogo) | 'Prestamo'
  * (dinero prestado a un cliente) — estos dos últimos no tienen costo conocido (snapshot
  * 0) y no afectan Inventario (sus fórmulas sólo suman Tipo="Producto").
+ *
+ * v9 — Bloqueada con LockService: dos cobros a la vez (dos pestañas, doble click, o el
+ * celular y la compu al mismo tiempo) ya NO se pisan — el segundo espera a que el primero
+ * termine de escribir en Ventas/Pagos antes de calcular su propia fila/folio. Sin esto,
+ * ambos podían calcular el mismo "siguiente renglón libre" y uno se comía la venta del otro.
  */
 function registrarVenta(d) {
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(10000)) {
+    return { ok: false, err: 'El sistema está ocupado procesando otro cobro. Intenta de nuevo en unos segundos.' };
+  }
   try {
     var ss = _ss();
     var sh = ss.getSheetByName('Ventas');
@@ -799,6 +808,7 @@ function registrarVenta(d) {
       subtotalFiado: Math.round((total - subtotalPagado) * 100) / 100
     };
   } catch (e) { return { ok: false, err: String(e) }; }
+  finally { lock.releaseLock(); }
 }
 
 /**
@@ -806,8 +816,15 @@ function registrarVenta(d) {
  * El monto se reparte igual que en una venta (mixto permitido) y se aplica en FIFO
  * contra las filas fiadas más viejas del cliente — ver _aplicarAbonoFIFO. Siempre
  * genera su propio folio (AB-...) para que el frontend pueda armar un recibo.
+ *
+ * v9 — También bloqueada con LockService: dos abonos al mismo cliente a la vez no deben
+ * leer el mismo "crédito previo" y pisarse (uno de los dos dejaría el saldo mal calculado).
  */
 function registrarAbono(args) {
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(10000)) {
+    return { ok: false, err: 'El sistema está ocupado procesando otro cobro/abono. Intenta de nuevo en unos segundos.' };
+  }
   try {
     var cliente = String((args && args.cliente) || '').trim();
     if (!cliente) return { ok: false, err: 'Falta el nombre del cliente.' };
@@ -862,6 +879,7 @@ function registrarAbono(args) {
       msg: 'Abono de $' + L.suma.toFixed(2) + ' registrado. Saldo restante de ' + cliente + ': $' + saldoDespues.toFixed(2)
     };
   } catch (e) { return { ok: false, err: String(e) }; }
+  finally { lock.releaseLock(); }
 }
 
 function getVentas(params) {
