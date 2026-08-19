@@ -1,0 +1,9 @@
+# Datos reales de negocio — nunca deben subirse a este repo público
+*.xlsx
+*.xls
+*.csv
+
+# Configs/credenciales que pudieran contener IDs o secretos reales
+credentials*.json
+*.env
+appsscript.local.json
